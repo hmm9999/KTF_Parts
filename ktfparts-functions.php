@@ -114,21 +114,36 @@ function ktfparts_list_shortcode() {
     }
 
     ob_start();
+    // Highlight sortable headers
+    echo '<style>.ktf-sort{background:#f9f9f9;padding:8px;} .ktf-sort:hover{background:#e0e0e0;}</style>';
+
     // Add New Part button
-    echo '<p><a class="button" href="' . esc_url(site_url('/add-parts/')) . '">Add New Part</a></p>';
+    // Add New Part button
+echo '<p><a class="button" href="' . esc_url(site_url('/add-parts/')) . '">Add New Part</a></p>';
+// Download CSV button
+echo '<p><a class="button" href="' . esc_url(admin_url('admin-ajax.php?action=ktfparts_export_csv&nonce=' . wp_create_nonce('ktfparts_export_csv'))) . '">Download CSV</a></p>';
+// Import CSV form
+echo '<form id="ktfparts-import-form" enctype="multipart/form-data" style="margin-top:10px;">';
+echo '<p><input type="file" name="csv_file" accept=".csv" required> <button type="submit" class="button">Import CSV</button></p>';
+echo '</form>';;
     // Search box
     echo '<input type="text" id="ktfparts-search" placeholder="Search parts..." style="width:100%;padding:6px;margin-bottom:10px;">';
     // Table
-    echo '<table class="ktf-parts-table" style="width:100%;border-collapse:collapse;"><thead><tr>';
-    echo '<th>Part #</th><th>Name</th><th>Location</th><th>Qty</th><th>Updated</th><th>Actions</th>';
+    echo '<table class="ktf-parts-table" style="width:100%;border-collapse:collapse;"><thead><tr>';;
+    echo '<th class="ktf-sort" data-index="0">Name</th>';
+    echo '<th class="ktf-sort" data-index="1">Part #</th>';
+    echo '<th class="ktf-sort" data-index="2">Qty</th>';
+    echo '<th class="ktf-sort" data-index="3">Location</th>';
+    echo '<th class="ktf-sort" data-index="4">Updated</th>';
+    echo '<th>Actions</th>';
     echo '</tr></thead><tbody>';
     foreach ($parts as $p) {
         $edit_url = site_url('/add-parts/?edit=' . intval($p->part_id));
         echo '<tr>';
-        echo '<td>' . esc_html($p->part_number) . '</td>';
         echo '<td>' . esc_html($p->name) . '</td>';
-        echo '<td>' . esc_html($p->location_label) . '</td>';
+        echo '<td>' . esc_html($p->part_number) . '</td>';
         echo '<td>' . intval($p->quantity) . '</td>';
+        echo '<td>' . esc_html($p->location_label) . '</td>';
         echo '<td>' . esc_html(date('Y-m-d', strtotime($p->updated_at))) . '</td>';
         echo '<td><a href="' . esc_url($edit_url) . '">Edit</a></td>';
         echo '</tr>';
@@ -136,6 +151,33 @@ function ktfparts_list_shortcode() {
     echo '</tbody></table>';
     ?>
     <script>
+    // CSV import handler
+    jQuery(function($){
+        $('#ktfparts-import-form').on('submit', function(e){
+            e.preventDefault();
+            var formData = new FormData(this);
+            formData.append('action', 'ktfparts_import_csv');
+            formData.append('nonce', KTFPartsAjax.nonce);
+            $.ajax({
+                url: KTFPartsAjax.ajaxurl,
+                type: 'POST',
+                data: formData,
+                contentType: false,
+                processData: false,
+                success: function(response) {
+                    if(response.success) {
+                        alert('Imported ' + response.data + ' parts.');
+                        location.reload();
+                    } else {
+                        alert('Import failed: ' + response.data);
+                    }
+                }
+            });
+        });
+    });
+
+    // Search handler remains below
+
     jQuery(function($) {
         $('#ktfparts-search').on('keyup', function() {
             var val = $(this).val().toLowerCase();
@@ -143,8 +185,31 @@ function ktfparts_list_shortcode() {
                 $(this).toggle($(this).text().toLowerCase().indexOf(val) > -1);
             });
         });
+        // Column sort handler
+        $('.ktf-sort').css('cursor','pointer').on('click', function() {
+            var table = $(this).closest('table');
+            var tbody = table.find('tbody');
+            var rows = tbody.find('tr').get();
+            var idx = $(this).data('index');
+            var asc = !$(this).data('asc');
+            rows.sort(function(a, b) {
+                var A = $(a).children('td').eq(idx).text().toUpperCase();
+                var B = $(b).children('td').eq(idx).text().toUpperCase();
+                if ($.isNumeric(A) && $.isNumeric(B)) {
+                    return (A - B) * (asc ? 1 : -1);
+                }
+                if (A < B) return asc ? -1 : 1;
+                if (A > B) return asc ? 1 : -1;
+                return 0;
+            });
+            $.each(rows, function(index, row) {
+                tbody.append(row);
+            });
+            table.find('.ktf-sort').data('asc', false);
+            $(this).data('asc', asc);
+        });
     });
-    </script>
+</script>
     <?php
     return ob_get_clean();
 }
@@ -234,3 +299,96 @@ function ktfparts_add_part_form_shortcode() {
     return ob_get_clean();
 }
 add_shortcode('ktfparts_add_form', 'ktfparts_add_part_form_shortcode');
+
+// AJAX: Export CSV
+add_action('wp_ajax_ktfparts_export_csv', function() {
+    check_ajax_referer('ktfparts_export_csv', 'nonce');
+    if (!is_user_logged_in()) wp_die('Permission denied');
+    $parts = ktfparts_get_user_parts(get_current_user_id());
+    if (empty($parts)) wp_die('No data');
+    header('Content-Type: text/csv');
+    header('Content-Disposition: attachment; filename="parts-' . date('Ymd') . '.csv"');
+    $output = fopen('php://output', 'w');
+    // Include ID column for updates
+    fputcsv($output, ['ID','Name','Part Number','Category','Quantity','Condition','Location','Notes','Created At','Updated At']);
+    foreach ($parts as $p) {
+        fputcsv($output, [
+            $p->part_id,
+            $p->name,
+            $p->part_number,
+            $p->category,
+            $p->quantity,
+            $p->condition_status,
+            $p->location_label,
+            str_replace(["
+","
+"], [' ', ' '], $p->notes),
+            $p->created_at,
+            $p->updated_at
+        ]);
+    }
+    fclose($output);
+    exit;
+});
+
+
+
+
+// AJAX: Import CSV
+add_action('wp_ajax_ktfparts_import_csv', function() {
+    check_ajax_referer('ktfparts_add_part', 'nonce');
+    if (!is_user_logged_in()) {
+        wp_send_json_error('Permission denied');
+    }
+    if (empty($_FILES['csv_file']['tmp_name'])) {
+        wp_send_json_error('No file uploaded');
+    }
+    $fp = fopen($_FILES['csv_file']['tmp_name'], 'r');
+    if (!$fp) {
+        wp_send_json_error('Cannot open file');
+    }
+    $row = 0;
+    $processed = 0;
+    global $wpdb;
+    $table = $wpdb->prefix . 'ktf_parts';
+    while (($data = fgetcsv($fp)) !== FALSE) {
+        if ($row++ === 0) continue; // skip header
+        $id          = intval($data[0] ?? 0);
+        $name        = sanitize_text_field($data[1] ?? '');
+        $part_number = sanitize_text_field($data[2] ?? '');
+        $category    = sanitize_text_field($data[3] ?? '');
+        $quantity    = intval($data[4] ?? 0);
+        $condition   = sanitize_text_field($data[5] ?? '');
+        $location    = sanitize_text_field($data[6] ?? '');
+        $notes       = sanitize_textarea_field($data[7] ?? '');
+
+        $entry = [
+            'name'             => $name,
+            'part_number'      => $part_number,
+            'category'         => $category,
+            'quantity'         => $quantity,
+            'condition_status' => $condition,
+            'location_label'   => $location,
+            'notes'            => $notes,
+            'updated_at'       => current_time('mysql'),
+        ];
+        // update existing
+        if ($id && $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $table WHERE part_id = %d AND owner_user_id = %d",
+            $id, get_current_user_id()
+        ))) {
+            if ($wpdb->update($table, $entry, ['part_id'=>$id,'owner_user_id'=>get_current_user_id()]) !== false) {
+                $processed++;
+            }
+        } else {
+            // insert new
+            $entry['owner_user_id'] = get_current_user_id();
+            $entry['created_at']    = current_time('mysql');
+            if ($wpdb->insert($table, $entry)) {
+                $processed++;
+            }
+        }
+    }
+    fclose($fp);
+    wp_send_json_success($processed);
+});
