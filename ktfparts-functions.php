@@ -22,7 +22,7 @@ function ktfparts_get_user_parts($user_id) {
 add_action('wp_enqueue_scripts', function () {
     wp_enqueue_script(
         'ktfparts-ajax',
-        plugin_dir_url(__FILE__) . 'ktfparts.js',
+        plugin_dir_url(__FILE__) . '../ktfparts.js',
         ['jquery'],
         null,
         true
@@ -144,7 +144,7 @@ echo '</form>';;
         echo '<td>' . esc_html($p->part_number) . '</td>';
         echo '<td>' . intval($p->quantity) . '</td>';
         echo '<td>' . esc_html($p->location_label) . '</td>';
-        echo '<td>' . esc_html(date('Y-m-d', strtotime($p->updated_at))) . '</td>';
+        echo '<td>' . esc_html(date('j\/n\/y', strtotime($p->updated_at))) . '</td>';
         echo '<td><a href="' . esc_url($edit_url) . '">Edit</a></td>';
         echo '</tr>';
     }
@@ -178,7 +178,15 @@ echo '</form>';;
 
     // Search handler remains below
 
-    jQuery(function($) {
+    jQuery(function($) {    // Qty +/- buttons adjust input only
+    $('#ktfparts-add-form').on('click', '.ktf-qty-btn', function(e) {
+        e.preventDefault();
+        var input = $('#ktfparts-add-form').find('input[name=\"quantity\"]');
+        var val = parseInt(input.val()) || 0;
+        val += parseInt($(this).data('delta'));
+        if (val < 0) val = 0;
+        input.val(val);
+    });
         $('#ktfparts-search').on('keyup', function() {
             var val = $(this).val().toLowerCase();
             $('.ktf-parts-table tbody tr').filter(function() {
@@ -238,15 +246,15 @@ function ktfparts_add_part_form_shortcode() {
         <p><label>Part Name<br><input type="text" name="name" value="<?php echo esc_attr($part->name ?? ''); ?>" required></label></p>
         <p><label>Part Number<br><input type="text" name="part_number" value="<?php echo esc_attr($part->part_number ?? ''); ?>" required></label></p>
         <p><label>Category<br><input type="text" name="category" value="<?php echo esc_attr($part->category ?? ''); ?>" required></label></p>
-        <p><label>Quantity<br><input type="number" name="quantity" value="<?php echo esc_attr($part->quantity ?? '0'); ?>" required></label></p>
+        <p><label>Quantity<br>
+            <button type="button" class="ktf-qty-btn" data-delta="-1">-</button>
+            <input type="number" name="quantity" value="<?php echo esc_attr($part->quantity ?? '0'); ?>" required style="width:60px;text-align:center;">
+            <button type="button" class="ktf-qty-btn" data-delta="1">+</button>
+        </label></p>
         <p><label>Condition<br><select name="condition_status" required>
-            <?php
-            $conds = ['New','Serviceable','Overhauled','Used','As Removed'];
-            foreach ($conds as $c) {
-                $sel = ($part && $part->condition_status === $c) ? 'selected' : '';
-                echo "<option value=\"{$c}\" {$sel}>{$c}</option>";
-            }
-            ?>
+            <?php foreach (['New','Serviceable','Overhauled','Used','As Removed'] as $c): ?>
+                <option value="<?php echo esc_attr($c); ?>" <?php selected($part->condition_status ?? '', $c); ?>><?php echo esc_html($c); ?></option>
+            <?php endforeach; ?>
         </select></label></p>
         <p><label>Location<br><input type="text" name="location_label" value="<?php echo esc_attr($part->location_label ?? ''); ?>"></label></p>
         <p><label>Notes<br><textarea name="notes"><?php echo esc_textarea($part->notes ?? ''); ?></textarea></label></p>
