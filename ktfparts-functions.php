@@ -354,23 +354,18 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
     if (!$fp) {
         wp_send_json_error('Cannot open file');
     }
+
     $row = 0;
     $processed = 0;
     global $wpdb;
     $table = $wpdb->prefix . 'ktf_parts';
+
+    // Read header
     while (($data = fgetcsv($fp)) !== FALSE) {
         if ($row++ === 0) continue; // skip header
-        // Initialize ID before delete check
-        $id = intval($data[0] ?? 0);
-        // Delete-flag support
-        $deleteFlag = trim(strtolower($data[10] ?? ''));
-        if ($deleteFlag === 'd' && $id) {
-            $wpdb->delete(
-                $table,
-                ['part_id' => $id, 'owner_user_id' => get_current_user_id()]
-            );
-            continue;
-        }
+
+        // Pull ID and values from CSV
+        $id          = intval($data[0] ?? 0);
         $name        = sanitize_text_field($data[1] ?? '');
         $part_number = sanitize_text_field($data[2] ?? '');
         $category    = sanitize_text_field($data[3] ?? '');
@@ -378,8 +373,28 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
         $condition   = sanitize_text_field($data[5] ?? '');
         $location    = sanitize_text_field($data[6] ?? '');
         $notes       = sanitize_textarea_field($data[7] ?? '');
+        $deleteFlag  = trim(strtolower($data[10] ?? ''));
 
-        $entry = [
+        // If marked 'd', delete and skip
+        if ($deleteFlag === 'd' && $id) {
+            $wpdb->delete(
+                $table,
+                ['part_id' => $id, 'owner_user_id' => get_current_user_id()]
+            );
+            continue;
+        }
+
+        // Compare incoming vs existing to suppress unchanged updated_at
+        $existing = $wpdb->get_row(
+            $wpdb->prepare(
+                "SELECT name, part_number, category, quantity, condition_status, location_label, notes FROM $table WHERE part_id = %d AND owner_user_id = %d",
+                $id,
+                get_current_user_id()
+            ),
+            ARRAY_A
+        );
+
+        $incoming = [
             'name'             => $name,
             'part_number'      => $part_number,
             'category'         => $category,
@@ -387,14 +402,34 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
             'condition_status' => $condition,
             'location_label'   => $location,
             'notes'            => $notes,
-            'updated_at'       => current_time('mysql'),
         ];
-        // update existing or insert new
-        if ($id && $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) FROM $table WHERE part_id = %d AND owner_user_id = %d",
-            $id, get_current_user_id()
-        ))) {
-            if ($wpdb->update($table, $entry, ['part_id' => $id, 'owner_user_id' => get_current_user_id()]) !== false) {
+
+        // If exists and identical, skip update
+if ($existing) {
+    // Check each field for changes
+    $unchanged = true;
+    foreach ($incoming as $field => $value) {
+        if ((string)$existing[$field] !== (string)$value) {
+            $unchanged = false;
+            break;
+        }
+    }
+    if ($unchanged) {
+        continue;
+    }
+}
+
+        // Prepare data with updated_at if changed
+        $entry = $incoming;
+        $entry['updated_at'] = current_time('mysql');
+
+        // Update or insert
+        if ($id && $existing) {
+            if ($wpdb->update(
+                $table,
+                $entry,
+                ['part_id' => $id, 'owner_user_id' => get_current_user_id()]
+            ) !== false) {
                 $processed++;
             }
         } else {
@@ -405,6 +440,7 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
             }
         }
     }
+
     fclose($fp);
     wp_send_json_success($processed);
 });
