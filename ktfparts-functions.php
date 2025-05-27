@@ -308,7 +308,7 @@ function ktfparts_add_part_form_shortcode() {
 }
 add_shortcode('ktfparts_add_form', 'ktfparts_add_part_form_shortcode');
 
-// AJAX: Export CSV
+// AJAX: export CSV
 add_action('wp_ajax_ktfparts_export_csv', function() {
     check_ajax_referer('ktfparts_export_csv', 'nonce');
     if (!is_user_logged_in()) wp_die('Permission denied');
@@ -317,8 +317,8 @@ add_action('wp_ajax_ktfparts_export_csv', function() {
     header('Content-Type: text/csv');
     header('Content-Disposition: attachment; filename="parts-' . date('Ymd') . '.csv"');
     $output = fopen('php://output', 'w');
-    // Include ID column for updates
-    fputcsv($output, ['ID','Name','Part Number','Category','Quantity','Condition','Location','Notes','Created At','Updated At']);
+    // Header with Delete column
+    fputcsv($output, ['ID','Name','Part Number','Category','Quantity','Condition','Location','Notes','Created At','Updated At','Delete']);
     foreach ($parts as $p) {
         fputcsv($output, [
             $p->part_id,
@@ -328,11 +328,10 @@ add_action('wp_ajax_ktfparts_export_csv', function() {
             $p->quantity,
             $p->condition_status,
             $p->location_label,
-            str_replace(["
-","
-"], [' ', ' '], $p->notes),
+            str_replace(["\r\n","\n"], [' ', ' '], $p->notes),
             $p->created_at,
-            $p->updated_at
+            $p->updated_at,
+            '' // Delete placeholder
         ]);
     }
     fclose($output);
@@ -342,7 +341,7 @@ add_action('wp_ajax_ktfparts_export_csv', function() {
 
 
 
-// AJAX: Import CSV
+// AJAX: import CSV
 add_action('wp_ajax_ktfparts_import_csv', function() {
     check_ajax_referer('ktfparts_add_part', 'nonce');
     if (!is_user_logged_in()) {
@@ -361,7 +360,17 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
     $table = $wpdb->prefix . 'ktf_parts';
     while (($data = fgetcsv($fp)) !== FALSE) {
         if ($row++ === 0) continue; // skip header
-        $id          = intval($data[0] ?? 0);
+        // Initialize ID before delete check
+        $id = intval($data[0] ?? 0);
+        // Delete-flag support
+        $deleteFlag = trim(strtolower($data[10] ?? ''));
+        if ($deleteFlag === 'd' && $id) {
+            $wpdb->delete(
+                $table,
+                ['part_id' => $id, 'owner_user_id' => get_current_user_id()]
+            );
+            continue;
+        }
         $name        = sanitize_text_field($data[1] ?? '');
         $part_number = sanitize_text_field($data[2] ?? '');
         $category    = sanitize_text_field($data[3] ?? '');
@@ -380,16 +389,15 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
             'notes'            => $notes,
             'updated_at'       => current_time('mysql'),
         ];
-        // update existing
+        // update existing or insert new
         if ($id && $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM $table WHERE part_id = %d AND owner_user_id = %d",
             $id, get_current_user_id()
         ))) {
-            if ($wpdb->update($table, $entry, ['part_id'=>$id,'owner_user_id'=>get_current_user_id()]) !== false) {
+            if ($wpdb->update($table, $entry, ['part_id' => $id, 'owner_user_id' => get_current_user_id()]) !== false) {
                 $processed++;
             }
         } else {
-            // insert new
             $entry['owner_user_id'] = get_current_user_id();
             $entry['created_at']    = current_time('mysql');
             if ($wpdb->insert($table, $entry)) {
