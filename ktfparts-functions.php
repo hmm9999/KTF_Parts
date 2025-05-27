@@ -103,6 +103,32 @@ function ktfparts_ajax_delete_part() {
     }
 }
 
+// AJAX: update quantity only
+add_action('wp_ajax_ktfparts_update_quantity', 'ktfparts_update_quantity');
+function ktfparts_update_quantity() {
+    check_ajax_referer('ktfparts_add_part', 'nonce');
+    if (!is_user_logged_in()) {
+        wp_send_json_error('Not logged in');
+    }
+    $part_id = intval($_POST['part_id'] ?? 0);
+    $newQty  = intval($_POST['quantity'] ?? 0);
+    if (!$part_id) {
+        wp_send_json_error('Invalid Part ID');
+    }
+    global $wpdb;
+    $table = $wpdb->prefix . 'ktf_parts';
+    $update = $wpdb->update(
+        $table,
+        ['quantity' => $newQty, 'updated_at' => current_time('mysql')],
+        ['part_id' => $part_id, 'owner_user_id' => get_current_user_id()]
+    );
+    if ($update !== false) {
+        wp_send_json_success('Quantity updated');
+    } else {
+        wp_send_json_error('Quantity update failed');
+    }
+}
+
 // Shortcode: list inventory
 function ktfparts_list_shortcode() {
     if (!is_user_logged_in()) {
@@ -142,84 +168,134 @@ echo '</form>';;
         echo '<tr>';
         echo '<td>' . esc_html($p->name) . '</td>';
         echo '<td>' . esc_html($p->part_number) . '</td>';
-        echo '<td>' . intval($p->quantity) . '</td>';
+        echo '<td><a href="#" class="ktf-qty-link" data-part-id="' . intval($p->part_id) . '" data-part-number="' . esc_attr($p->part_number) . '" data-current-qty="' . intval($p->quantity) . '">' . intval($p->quantity) . '</a></td>';  
         echo '<td>' . esc_html($p->location_label) . '</td>';
-        echo '<td>' . esc_html(date('j\/n\/y', strtotime($p->updated_at))) . '</td>';
+        echo '<td>' . esc_html( date('y/m/d', strtotime($p->updated_at)) ) . '</td>';
         echo '<td><a href="' . esc_url($edit_url) . '">Edit</a></td>';
         echo '</tr>';
     }
     echo '</tbody></table>';
     ?>
-    <script>
+<script>
+jQuery(function($) {
     // CSV import handler
-    jQuery(function($){
-        $('#ktfparts-import-form').on('submit', function(e){
-            e.preventDefault();
-            var formData = new FormData(this);
-            formData.append('action', 'ktfparts_import_csv');
-            formData.append('nonce', KTFPartsAjax.nonce);
-            $.ajax({
-                url: KTFPartsAjax.ajaxurl,
-                type: 'POST',
-                data: formData,
-                contentType: false,
-                processData: false,
-                success: function(response) {
-                    if(response.success) {
-                        alert('Imported ' + response.data + ' parts.');
-                        location.reload();
-                    } else {
-                        alert('Import failed: ' + response.data);
-                    }
-                }
-            });
-        });
-    });
-
-    // Search handler remains below
-
-    jQuery(function($) {    // Qty +/- buttons adjust input only
-    $('#ktfparts-add-form').on('click', '.ktf-qty-btn', function(e) {
+    $('#ktfparts-import-form').on('submit', function(e) {
         e.preventDefault();
-        var input = $('#ktfparts-add-form').find('input[name=\"quantity\"]');
-        var val = parseInt(input.val()) || 0;
-        val += parseInt($(this).data('delta'));
-        if (val < 0) val = 0;
-        input.val(val);
-    });
-        $('#ktfparts-search').on('keyup', function() {
-            var val = $(this).val().toLowerCase();
-            $('.ktf-parts-table tbody tr').filter(function() {
-                $(this).toggle($(this).text().toLowerCase().indexOf(val) > -1);
-            });
-        });
-        // Column sort handler
-        $('.ktf-sort').css('cursor','pointer').on('click', function() {
-            var table = $(this).closest('table');
-            var tbody = table.find('tbody');
-            var rows = tbody.find('tr').get();
-            var idx = $(this).data('index');
-            var asc = !$(this).data('asc');
-            rows.sort(function(a, b) {
-                var A = $(a).children('td').eq(idx).text().toUpperCase();
-                var B = $(b).children('td').eq(idx).text().toUpperCase();
-                if ($.isNumeric(A) && $.isNumeric(B)) {
-                    return (A - B) * (asc ? 1 : -1);
+        var formData = new FormData(this);
+        formData.append('action', 'ktfparts_import_csv');
+        formData.append('nonce', KTFPartsAjax.nonce);
+        $.ajax({
+            url: KTFPartsAjax.ajaxurl,
+            type: 'POST',
+            data: formData,
+            contentType: false,
+            processData: false,
+            success: function(response) {
+                if (response.success) {
+                    var imp = response.data.processed;
+                    var del = response.data.deleted;
+                    if (confirm('Imported ' + imp + ' items and deleted ' + del + ' items. Refresh page?')) {
+                        location.reload();
+                    }
+                } else {
+                    alert('Import failed: ' + response.data);
                 }
-                if (A < B) return asc ? -1 : 1;
-                if (A > B) return asc ? 1 : -1;
-                return 0;
-            });
-            $.each(rows, function(index, row) {
-                tbody.append(row);
-            });
-            table.find('.ktf-sort').data('asc', false);
-            $(this).data('asc', asc);
+            }
         });
     });
+
+    // Append quantity modal once
+    if (!$('#ktf-qty-modal').length) {
+        $('body').append(
+            '<div id="ktf-qty-modal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;padding:20px;border:1px solid #ccc;z-index:10000;">'
+          + '<h3>Adjust Quantity</h3>'
+          + '<p id="ktf-qty-part"></p>'
+          + '<button id="ktf-qty-dec">-</button>'
+          + '<input type="text" id="ktf-qty-input" style="width:40px;text-align:center;" readonly>'
+          + '<button id="ktf-qty-inc">+</button>'
+          + '<p><button id="ktf-qty-save">Save</button> <button id="ktf-qty-cancel">Cancel</button></p>'
+          + '</div>'
+        );
+    }
+
+    // Quantity hyperlink click
+    $('.ktf-qty-link').off('click').on('click', function(e) {
+        e.preventDefault();
+        var partId = $(this).data('part-id');
+        var qty = $(this).data('current-qty');
+        var partNum = $(this).data('part-number');
+        $('#ktf-qty-part').text('Part #: ' + partNum + ' (ID: ' + partId + ') - Qty: ' + qty);
+        $('#ktf-qty-input').val(qty);
+        $('#ktf-qty-modal').data('part-id', partId).show();
+    });
+
+    // Modal buttons
+    $('#ktf-qty-inc').off('click').on('click', function() {
+        var val = parseInt($('#ktf-qty-input').val(), 10) + 1;
+        $('#ktf-qty-input').val(val);
+    });
+    $('#ktf-qty-dec').off('click').on('click', function() {
+        var val = parseInt($('#ktf-qty-input').val(), 10) - 1;
+        if (val < 0) val = 0;
+        $('#ktf-qty-input').val(val);
+    });
+    $('#ktf-qty-cancel').off('click').on('click', function() {
+        $('#ktf-qty-modal').hide();
+    });
+    $('#ktf-qty-save').off('click').on('click', function() {
+        var partId = $('#ktf-qty-modal').data('part-id');
+        var newQty = parseInt($('#ktf-qty-input').val(), 10);
+        $.post(
+            KTFPartsAjax.ajaxurl,
+            {
+                action: 'ktfparts_update_quantity',
+                nonce: KTFPartsAjax.nonce,
+                part_id: partId,
+                quantity: newQty
+            },
+            function(res) {
+                if (res.success) {
+                    location.reload();
+                } else {
+                    alert('Quantity update failed: ' + res.data);
+                }
+            }
+        );
+    });
+
+    // Search handler
+    $('#ktfparts-search').off('keyup').on('keyup', function() {
+        var val = $(this).val().toLowerCase();
+        $('.ktf-parts-table tbody tr').filter(function() {
+            $(this).toggle($(this).text().toLowerCase().indexOf(val) > -1);
+        });
+    });
+
+    // Column sort handler
+    $('.ktf-sort').off('click').css('cursor','pointer').on('click', function() {
+        var table = $(this).closest('table'),
+            tbody = table.find('tbody'),
+            rows = tbody.find('tr').get(),
+            idx = $(this).data('index'),
+            asc = !$(this).data('asc');
+        rows.sort(function(a, b) {
+            var A = $(a).children('td').eq(idx).text().toUpperCase();
+            var B = $(b).children('td').eq(idx).text().toUpperCase();
+            if ($.isNumeric(A) && $.isNumeric(B)) {
+                return (A - B) * (asc ? 1 : -1);
+            }
+            if (A < B) return asc ? -1 : 1;
+            if (A > B) return asc ? 1 : -1;
+            return 0;
+        });
+        $.each(rows, function(i, row) { tbody.append(row); });
+        $('.ktf-sort').data('asc', false);
+        $(this).data('asc', asc);
+    });
+});
 </script>
-    <?php
-    return ob_get_clean();
+<?php
+return ob_get_clean();
 }
 add_shortcode('ktfparts_list', 'ktfparts_list_shortcode');
 
@@ -357,6 +433,7 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
 
     $row = 0;
     $processed = 0;
+    $deleted = 0;
     global $wpdb;
     $table = $wpdb->prefix . 'ktf_parts';
 
@@ -364,7 +441,6 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
     while (($data = fgetcsv($fp)) !== FALSE) {
         if ($row++ === 0) continue; // skip header
 
-        // Pull ID and values from CSV
         $id          = intval($data[0] ?? 0);
         $name        = sanitize_text_field($data[1] ?? '');
         $part_number = sanitize_text_field($data[2] ?? '');
@@ -375,16 +451,18 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
         $notes       = sanitize_textarea_field($data[7] ?? '');
         $deleteFlag  = trim(strtolower($data[10] ?? ''));
 
-        // If marked 'd', delete and skip
+        // Delete-flag support
         if ($deleteFlag === 'd' && $id) {
-            $wpdb->delete(
+            if ($wpdb->delete(
                 $table,
                 ['part_id' => $id, 'owner_user_id' => get_current_user_id()]
-            );
+            )) {
+                $deleted++;
+            }
             continue;
         }
 
-        // Compare incoming vs existing to suppress unchanged updated_at
+        // Compare existing vs incoming
         $existing = $wpdb->get_row(
             $wpdb->prepare(
                 "SELECT name, part_number, category, quantity, condition_status, location_label, notes FROM $table WHERE part_id = %d AND owner_user_id = %d",
@@ -393,7 +471,6 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
             ),
             ARRAY_A
         );
-
         $incoming = [
             'name'             => $name,
             'part_number'      => $part_number,
@@ -404,32 +481,23 @@ add_action('wp_ajax_ktfparts_import_csv', function() {
             'notes'            => $notes,
         ];
 
-        // If exists and identical, skip update
-if ($existing) {
-    // Check each field for changes
-    $unchanged = true;
-    foreach ($incoming as $field => $value) {
-        if ((string)$existing[$field] !== (string)$value) {
-            $unchanged = false;
-            break;
+        if ($existing) {
+            $unchanged = true;
+            foreach ($incoming as $field => $value) {
+                if ((string)$existing[$field] !== (string)$value) {
+                    $unchanged = false;
+                    break;
+                }
+            }
+            if ($unchanged) continue;
         }
-    }
-    if ($unchanged) {
-        continue;
-    }
-}
 
-        // Prepare data with updated_at if changed
+        // Prepare entry
         $entry = $incoming;
         $entry['updated_at'] = current_time('mysql');
 
-        // Update or insert
         if ($id && $existing) {
-            if ($wpdb->update(
-                $table,
-                $entry,
-                ['part_id' => $id, 'owner_user_id' => get_current_user_id()]
-            ) !== false) {
+            if ($wpdb->update($table, $entry, ['part_id' => $id, 'owner_user_id' => get_current_user_id()]) !== false) {
                 $processed++;
             }
         } else {
@@ -440,7 +508,6 @@ if ($existing) {
             }
         }
     }
-
     fclose($fp);
-    wp_send_json_success($processed);
+    wp_send_json_success(['processed' => $processed, 'deleted' => $deleted]);
 });
